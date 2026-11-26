@@ -1,0 +1,12 @@
+{
+  "name": "sim-website",
+  "private": true,
+  "type": "module",
+  "description": "Website for S.I.M: download, buy licence keys (UPI QR / Google Pay / PhonePe / Paytm via Razorpay), accounts and the admin dashboard.",
+  "scripts": {
+    "dev": "netlify dev",
+    "create-admin": "node scripts/create-admin.mjs",
+    "test": "node tests/run.mjs"
+  },
+  "engines": { "node": ">=18" }
+}
