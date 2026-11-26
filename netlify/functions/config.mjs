@@ -10,7 +10,7 @@ async function deepCheck(sec) {
   const tryQ = async (fn) => { try { await fn(); return true; } catch { return false; } };
   const [usage, phone] = await Promise.all([
     tryQ(() => db.select("ai_usage", {}, { limit: 1 })),
-    tryQ(() => db.select("licences", {}, { limit: 1, columns: "id,activated_phone" })),
+    tryQ(() => db.select("licences", {}, { limit: 1, columns: "kid,activated_phone" })),
   ]);
   return { schema_latest: usage && phone, env_missing: NEEDED_ENV.filter((k) => !env(k)),
            webhook_ready: !!sec.razorpay_webhook_secret };
