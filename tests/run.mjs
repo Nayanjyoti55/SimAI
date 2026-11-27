@@ -193,8 +193,32 @@ r = await call("licence-status", { body: { key: lic.key, installer: true } });
 assert.equal(r.data.ok, true);
 r = await call("licence-status", { body: { key: lic.key, machine: "7K2Q-9XWM-4TPA-B", activate: true } });
 assert.equal(r.data.ok, true);
-r = await call("licence-status", { body: { key: lic.key, machine: "AAAA-BBBB-CCCC-D", activate: true } });
-assert.equal(r.data.reason, "used");
+r = await call("licence-status", { body: { key: lic.key, machine: "AAAA-BBBB-CCCC-D", activate: true, name: "LAPTOP (Windows)" } });
+assert.equal(r.data.ok, true, "a month plan allows 2 devices");
+assert.equal(r.data.devices_used, 2);
+r = await call("licence-status", { body: { key: lic.key, machine: "CCCC-DDDD-EEEE-F", activate: true } });
+assert.equal(r.data.reason, "device_limit");
+assert.equal(r.data.max_devices, 2);
+assert.ok(r.data.devices.some((d) => d.name === "LAPTOP (Windows)") && r.data.message);
+r = await call("licence-release", { body: { key: lic.key, machine: "7K2Q-9XWM-4TPA-B" } });   // sign out on PC 1
+assert.equal(r.data.ok, true);
+r = await call("licence-status", { body: { key: lic.key, machine: "CCCC-DDDD-EEEE-F", activate: true } });
+assert.equal(r.data.ok, true, "a freed slot can be used by a new device");
+r = await call("licence-status", { body: { key: lic.key, machine: "7K2Q-9XWM-4TPA-B" } });
+assert.equal(r.data.reason, "device_removed", "the signed-out PC is told");
+r = await call("licence-release", { body: { key: "ZZZZ", machine: "x" } });
+assert.equal(r.status, 400);
+// files folder + Google Drive link remembered with the key (reinstall reconnects); only signed-in devices
+r = await call("licence-prefs", { body: { key: lic.key, machine: "CCCC-DDDD-EEEE-F",
+  prefs: { vault_root: "D:\\SIM Files", drive_mode: "folder", drive_folder_link: "https://drive.google.com/drive/folders/abc",
+           password: "nope", drive_mode_x: 1 } } });
+assert.equal(r.data.ok, true);
+assert.equal(r.data.prefs.vault_root, "D:\\SIM Files");
+assert.equal(r.data.prefs.password, undefined, "only the known setting names are kept");
+r = await call("licence-prefs", { body: { key: lic.key, machine: "CCCC-DDDD-EEEE-F" } });
+assert.equal(r.data.prefs.drive_mode, "folder");
+r = await call("licence-prefs", { body: { key: lic.key, machine: "7K2Q-9XWM-4TPA-B" } });
+assert.equal(r.status, 403, "a signed-out PC can't read them");
 r = await call("licence-status", { body: { key: lic.key.replace(/^./, (c) => (c === "7" ? "8" : "7")) } });
 assert.equal(r.data.reason, "invalid");
 lic.enabled = false;
@@ -204,7 +228,7 @@ lic.enabled = true;
 r = await call("checkin", { body: { kid: lic.kid, machine: "7K2Q9XWM4TPAB", app_version: "3.10", ai_name: "Nova",
                                     os: "Windows 11", unlock_fails: 2, status: "ok" } });
 assert.equal(r.data.ok, true);
-console.log("10> installer check, one PC per key, tampered + blocked keys refused, check-in stored");
+console.log("10> installer check, 2 devices per month key, sign-out frees a slot, tampered + blocked keys refused, check-in stored");
 
 // 11. admin tools; a buyer can't use them
 r = await call("admin", { body: {}, token: "u-1", params: { action: "stats" } });
@@ -246,18 +270,28 @@ console.log(`13> wrong secret -> "${r.data.error}", no half-made order`);
 // 14. one key = one PC + one phone; a second phone is refused; admin can free the phone
 D.tables.secret_settings[0].razorpay_key_secret = KEY_SECRET;
 const k2 = newer;                                           // the renewed key from step 12
+r = await call("licence-status", { body: { key: lic.key, machine: "AAAA-BBBB-CCCC-D" } });   // a PC still on the old key
+assert.equal(r.data.reason, "renewed");
+assert.equal(r.data.new_key, k2.key, "a device of the old key gets the new key automatically");
+r = await call("licence-status", { body: { key: lic.key, machine: "QQQQ-QQQQ-QQQQ-Q" } });
+assert.equal(r.data.reason, "disabled", "a stranger with the old key gets nothing");
+r = await call("licence-status", { body: { key: k2.key, machine: "AAAA-BBBB-CCCC-D" } });
+assert.equal(r.data.ok, true, "the renewed key kept the old key's devices");
+r = await call("licence-prefs", { body: { key: k2.key, machine: "AAAA-BBBB-CCCC-D" } });
+assert.equal(r.data.prefs.drive_mode, "folder", "...and its files folder / Google Drive settings");
+r = await call("licence-status", { body: { key: k2.key, platform: "android", device: "a1b2-c3d4-e5f6", activate: true } });
+assert.equal(r.data.reason, "device_limit", "PC + PC = 2 of 2 slots");
+r = await call("admin", { body: { kid: k2.kid, max_devices: 3 }, token: "u-0", params: { action: "set-max-devices" } });
 r = await call("licence-status", { body: { key: k2.key, platform: "android", device: "a1b2-c3d4-e5f6", activate: true } });
 assert.equal(r.data.ok, true, JSON.stringify(r.data));
 assert.ok(r.data.until > Date.now() / 1000, "the phone is told when the key ends");
 assert.equal(k2.activated_phone, "A1B2C3D4E5F6");
-r = await call("licence-status", { body: { key: k2.key, machine: "PCPC-PCPC-PCPC-P", activate: true } });
-assert.equal(r.data.ok, true, "the same key still works on a PC");
 r = await call("licence-status", { body: { key: k2.key, platform: "android", device: "other-phone", activate: true } });
-assert.equal(r.data.reason, "used_phone");
+assert.equal(r.data.reason, "device_limit");
 r = await call("admin", { body: { kid: k2.kid }, token: "u-0", params: { action: "reset-phone" } });
 r = await call("licence-status", { body: { key: k2.key, platform: "android", device: "other-phone", activate: true } });
 assert.equal(r.data.ok, true);
-console.log("14> one key works on 1 PC + 1 phone; a 2nd phone is refused until the admin frees it");
+console.log("14> renewal: old devices + saved Drive settings switch to the new key; admin raises the device limit; freeing the phone slot works");
 
 // 15. the shared AI brain: licence key instead of an API key; Groq key never leaves the server
 const GROQ_CALLS = [];
@@ -311,5 +345,28 @@ assert.equal(r.status, 403, "a switched-off key loses the brain at once");
 k2.enabled = true;
 assert.ok(!JSON.stringify(D.tables.ai_usage).includes("hi"), "message contents are never stored");
 console.log(`15> shared AI brain: licence-checked, Groq key stays server-side, limits + blocking work (${D.tables.ai_usage[0].requests} requests counted)`);
+
+// 16. website protection: a password guesser gets blocked; others aren't affected; signatures feed for SIM Shield
+const evil = { "x-nf-client-connection-ip": "203.0.113.66" };
+for (let i = 0; i < 8; i++) {
+  r = await call("login", { body: { username: "nobody-" + i, password: "x" }, headers: evil });
+}
+assert.equal(r.status, 401);
+r = await call("login", { body: { username: "nobody", password: "x" }, headers: evil });
+assert.equal(r.status, 403, "the 9th try from that address is refused");
+assert.ok(D.tables.blocked_ips.some((b) => b.ip === "203.0.113.66"));
+r = await call("login", { body: { username: "nobody", password: "x" }, headers: { "x-nf-client-connection-ip": "198.51.100.7" } });
+assert.equal(r.status, 401, "another address is unaffected");
+r = await call("admin", { body: { ip: "203.0.113.66" }, token: "u-0", params: { action: "unblock-ip" } });
+r = await call("login", { body: { username: "nobody", password: "x" }, headers: evil });
+assert.equal(r.status, 401, "unblocked by the admin");
+r = await call("admin", { body: { sha256: "a".repeat(64), name: "Trojan.Test" }, token: "u-0", params: { action: "add-signature" } });
+r = await call("admin", { body: { domain: "https://sbi-kyc-update.xyz/login" }, token: "u-0", params: { action: "add-domain" } });
+r = await call("signatures", { method: "GET" });
+assert.equal(r.data.bad["a".repeat(64)], "Trojan.Test");
+assert.deepEqual(r.data.domains, ["sbi-kyc-update.xyz"]);
+r = await call("admin", { body: { sha256: "nope" }, token: "u-0", params: { action: "add-signature" } });
+assert.equal(r.status, 400);
+console.log("16> guessers blocked by address (admin can unblock); threat signatures + blocked sites published for SIM");
 
 console.log(`\nWEBSITE SERVER TESTS PASSED (${RZP.calls.length} pretend Razorpay calls)`);

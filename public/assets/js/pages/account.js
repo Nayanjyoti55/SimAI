@@ -24,6 +24,10 @@ export async function account() {
     state.sb.from("licences").select("*").eq("user_id", uid).order("created_at", { ascending: false }),
     state.sb.from("orders").select("*, plans(name)").eq("user_id", uid).order("created_at", { ascending: false }).limit(50),
   ]);
+  const kids = (lic || []).filter((l) => l.enabled).map((l) => l.kid);
+  const { data: devs } = kids.length ? await state.sb.from("licence_devices").select("*").in("kid", kids).eq("active", true)
+    .order("last_seen", { ascending: false }) : { data: [] };
+  const devsOf = (kid) => (devs || []).filter((d) => d.kid === kid);
   const p = state.profile || {};
   render(`<div class="wrap">
     <div class="page-head"><h1>Hi ${esc(p.username || "there")}</h1>
@@ -31,16 +35,23 @@ export async function account() {
       <div class="row"><a class="btn" href="#/pricing">Buy a new key</a>
         ${p.role === "admin" ? `<a class="btn btn-ghost" href="#/admin">Admin dashboard</a>` : ""}</div></div>
     <div class="panel"><h2>Licence keys</h2>
-      ${(lic || []).length ? `<div class="table-wrap"><table><thead><tr><th>Key</th><th>Valid</th><th>Status</th><th>PC</th><th></th></tr></thead><tbody>
+      ${(lic || []).length ? `<div class="table-wrap"><table><thead><tr><th>Key</th><th>Valid</th><th>Status</th><th>Devices</th><th></th></tr></thead><tbody>
       ${lic.map((l) => `<tr>
         <td><code>${esc(l.key.slice(0, 13))}…</code><br><small>${esc(l.note || "")}</small></td>
         <td>${l.not_after ? "until " + until(l.not_after) : esc(l.valid || "lifetime")}</td>
         <td>${statusTag(l)}</td>
-        <td>${l.activated_machine ? "In use" : "<span class='muted'>Not activated yet</span>"}</td>
+        <td>${l.enabled ? `${devsOf(l.kid).length} of ${Number(l.max_devices) || 2}` : "<span class='muted'>—</span>"}</td>
         <td class="row"><button class="btn btn-xs btn-ghost" data-copy="${esc(l.kid)}">Copy key</button>
-          ${l.enabled ? `<a class="btn btn-xs" href="#/buy/renew?renew=${esc(l.kid)}">Renew</a>` : ""}</td></tr>`).join("")}
+          ${l.enabled ? `<a class="btn btn-xs" href="#/buy/renew?renew=${esc(l.kid)}">Renew or upgrade</a>` : ""}</td></tr>`).join("")}
       </tbody></table></div>` : `<p>You don't have a key yet. <a href="#/pricing">Buy one</a> — it appears here the moment you pay.</p>`}
     </div>
+    ${(devs || []).length ? `<div class="panel"><h2>Devices using your keys</h2>
+      <p class="muted">Each key works on a set number of devices at once. Remove a device you no longer use (or lost) to free its place - then the key can be activated on a new one.</p>
+      <div class="table-wrap"><table><thead><tr><th>Device</th><th>Key</th><th>Last seen</th><th></th></tr></thead><tbody>
+      ${devs.map((d) => `<tr><td>${d.platform === "android" ? "📱" : "💻"} ${esc(d.name || (d.platform === "android" ? "Phone" : "PC"))}</td>
+        <td><code>${esc(d.kid.slice(0, 8))}</code></td><td>${when(d.last_seen)}</td>
+        <td><button class="btn btn-xs btn-danger" data-rel="${esc(d.kid)}|${esc(d.device)}|${esc(d.platform)}">Remove</button></td></tr>`).join("")}
+      </tbody></table></div></div>` : ""}
     <div class="panel"><h2>Payments and invoices</h2>
       ${(orders || []).length ? `<div class="table-wrap"><table><thead><tr><th>Order</th><th>Plan</th><th>Amount</th><th>Status</th><th>Date</th><th></th></tr></thead><tbody>
       ${orders.map((o) => `<tr><td><code>${esc(o.code)}</code></td><td>${esc(o.plans?.name || o.plan_id)}${o.kind === "renew" ? " (renewal)" : ""}</td>
@@ -58,6 +69,16 @@ export async function account() {
   $$("[data-copy]").forEach((b) => b.addEventListener("click", () => {
     const l = lic.find((x) => x.kid === b.dataset.copy);
     copy(l.key, "Licence key copied");
+  }));
+  $$("[data-rel]").forEach((b) => b.addEventListener("click", () => {
+    const [kid, device, platform] = b.dataset.rel.split("|");
+    const l = lic.find((x) => x.kid === kid);
+    if (!l || !confirm("Remove this device? SIM on it switches to basic features until the key is activated there again.")) return;
+    busy(b, async () => {
+      await api("/api/licence-release", { method: "POST", body: { key: l.key, device, platform } });
+      toast("Device removed - its place is free.");
+      account();
+    });
   }));
   $("#out").addEventListener("click", async () => {
     const { signOut } = await import("../api.js");
@@ -118,6 +139,7 @@ function summary({ plan, plans, order, renew }) {
       `<option value="${esc(p.id)}" ${p.id === plan?.id ? "selected" : ""}>${esc(p.name)} — ${rupees(p.price_paise)}</option>`).join("")}</select>` : ""}
     <div class="line"><span>${esc(state.cfg.product_name)} ${esc(plan?.name || "")}${renew || order?.kind === "renew" ? " renewal" : ""}</span><span>${rupees(plan?.price_paise)}</span></div>
     <div class="line muted"><span>Valid for</span><span>${planLength(plan)}</span></div>
+    <div class="line muted"><span>Devices (PC or phone)</span><span>up to ${Number(plan?.max_devices) || 2} at once</span></div>
     ${renew || order?.kind === "renew" ? `<p class="small muted">Continues from your current end date.</p>` : ""}
     ${order ? `<div class="line muted"><span>Order</span><span><code>${esc(order.code)}</code></span></div>` : ""}
     <div class="line total"><span>Total</span><span>${exactRupees(price)}</span></div>

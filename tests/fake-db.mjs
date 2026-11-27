@@ -40,7 +40,15 @@ export function fakeDb(seed = {}) {
       tab(table).push(r);
       return { ...r };
     },
-    async upsert(table, rows) { for (const r of rows) tab(table).push(r); return rows; },
+    async upsert(table, rows, onConflict) {            // merge on the conflict columns, like PostgREST
+      const keys = (onConflict || "").split(",").filter(Boolean);
+      const out = [];
+      for (const r of rows) {
+        const old = keys.length ? tab(table).find((x) => keys.every((k) => String(x[k]) === String(r[k]))) : null;
+        if (old) { Object.assign(old, r); out.push({ ...old }); } else { tab(table).push({ ...r }); out.push({ ...r }); }
+      }
+      return out;
+    },
     async update(table, filters, patch) {
       const hit = tab(table).filter((r) => match(r, filters));
       hit.forEach((r) => Object.assign(r, patch));

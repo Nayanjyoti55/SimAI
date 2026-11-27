@@ -48,6 +48,7 @@ const actions = {
       kid: info.kid, key, user_id: owner?.id || null, for_whom: b.for_whom || owner?.username || "",
       note: b.note || "", valid: describe(info), not_before: v.notBefore, not_after: v.notAfter, duration: v.duration,
       machine: b.machine ? normMachine(b.machine) : "", enabled: true, source: "admin", plan_id: b.plan_id || null,
+      max_devices: Math.max(1, Math.min(50, Number(b.max_devices) || 2)),
     });
     await audit(me.profile.username, "key_issued", { kid: info.kid, for: row.for_whom });
     return { key, licence: row };
@@ -67,13 +68,85 @@ const actions = {
     return { key, licence: row };
   },
 
+  async "set-max-devices"(b, me) {                // how many devices this one key may use at once
+    const n = Math.max(1, Math.min(50, Number(b.max_devices) || 1));
+    await db.update("licences", { kid: String(b.kid || "") }, { max_devices: n });
+    await audit(me.profile.username, "max_devices", { kid: b.kid, n });
+    return { ok: true, max_devices: n };
+  },
+
+  async "release-device"(b, me) {                 // free one device slot of a key
+    await db.update("licence_devices", { kid: String(b.kid || ""), device: String(b.device || "") },
+                    { active: false, released_at: new Date().toISOString() });
+    await audit(me.profile.username, "device_released", { kid: b.kid, device: String(b.device || "").slice(0, 8) });
+    return { ok: true };
+  },
+
+  async "security"() {                            // Admin › Security: what's blocked and published
+    const [ips, sigs, doms] = await Promise.all([
+      db.select("blocked_ips", {}, { order: "blocked_at.desc", limit: 500 }).catch(() => []),
+      db.select("security_signatures", {}, { order: "added_at.desc", limit: 2000 }).catch(() => []),
+      db.select("blocked_domains", {}, { order: "added_at.desc", limit: 2000 }).catch(() => []),
+    ]);
+    return { blocked_ips: ips, signatures: sigs, domains: doms };
+  },
+
+  async "unblock-ip"(b, me) {
+    await db.remove("blocked_ips", { ip: String(b.ip || "") });
+    await audit(me.profile.username, "ip_unblocked", { ip: b.ip });
+    return { ok: true };
+  },
+
+  async "block-ip"(b, me) {
+    const ip = String(b.ip || "").trim();
+    if (!/^[0-9a-fA-F:.]{3,45}$/.test(ip)) throw new HttpError(400, "That isn't an IP address.");
+    await db.upsert("blocked_ips", [{ ip, reason: b.reason || `blocked by ${me.profile.username}`, until: null }], "ip");
+    await audit(me.profile.username, "ip_blocked", { ip });
+    return { ok: true };
+  },
+
+  async "add-signature"(b, me) {
+    const sha = String(b.sha256 || "").trim().toLowerCase();
+    if (!/^[0-9a-f]{64}$/.test(sha)) throw new HttpError(400, "A SHA-256 is 64 letters 0-9 / a-f.");
+    await db.upsert("security_signatures", [{ sha256: sha, name: String(b.name || "threat").slice(0, 80) }], "sha256");
+    await audit(me.profile.username, "signature_added", { sha: sha.slice(0, 12) });
+    return { ok: true };
+  },
+
+  async "remove-signature"(b, me) {
+    await db.remove("security_signatures", { sha256: String(b.sha256 || "").toLowerCase() });
+    await audit(me.profile.username, "signature_removed", { sha: String(b.sha256 || "").slice(0, 12) });
+    return { ok: true };
+  },
+
+  async "add-domain"(b, me) {
+    const d = String(b.domain || "").trim().toLowerCase().replace(/^https?:\/\//, "").split("/")[0];
+    if (!/^[a-z0-9.-]+\.[a-z]{2,}$/.test(d)) throw new HttpError(400, "Type a site like bad-site.xyz");
+    await db.upsert("blocked_domains", [{ domain: d, reason: String(b.reason || "").slice(0, 120) }], "domain");
+    await audit(me.profile.username, "domain_blocked", { d });
+    return { ok: true };
+  },
+
+  async "remove-domain"(b, me) {
+    await db.remove("blocked_domains", { domain: String(b.domain || "").toLowerCase() });
+    return { ok: true };
+  },
+
   async "reset-pc"(b, me) {
+    try {
+      const devs = await db.select("licence_devices", { kid: String(b.kid || ""), platform: "windows", active: true });
+      for (const d of devs || []) await db.update("licence_devices", { kid: d.kid, device: d.device }, { active: false });
+    } catch { /* older schema */ }
     await db.update("licences", { kid: String(b.kid || "") }, { activated_machine: null });
     await audit(me.profile.username, "pc_reset", { kid: b.kid });
     return { ok: true };
   },
 
   async "reset-phone"(b, me) {                    // the buyer changed phones
+    try {
+      const devs = await db.select("licence_devices", { kid: String(b.kid || ""), platform: "android", active: true });
+      for (const d of devs || []) await db.update("licence_devices", { kid: d.kid, device: d.device }, { active: false });
+    } catch { /* older schema */ }
     await db.update("licences", { kid: String(b.kid || "") }, { activated_phone: null, phone_activated_at: null });
     await audit(me.profile.username, "phone_reset", { kid: b.kid });
     return { ok: true };

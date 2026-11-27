@@ -32,6 +32,30 @@ connect S.I.M (6). Doing localhost first means you find mistakes on your own lap
 
 ---
 
+## New in v3.2 (for SIM v3.12)
+
+**To update:** run `supabase/schema.sql` again in the Supabase SQL editor (safe to re-run, keeps your data), then
+`git add -A && git commit -m "v3.2" && git push`. Netlify redeploys by itself. Nothing new to set in Netlify.
+
+- **Devices per key.** Each plan has a "Devices" number (Admin › Plans), e.g. 1 month = 2. A PC or phone takes a
+  slot when it activates the key and frees it when it signs out, is uninstalled or is removed. Buyers see their
+  devices in **My licences** and can remove one; you can change any key's limit or free a device in Admin › Keys.
+  A renewed key keeps the old key's devices, and those devices switch to the new key by themselves.
+- **Basic-features mode.** Expired, blocked or suspended keys still open SIM, with only system, security and lock.
+  The RENEW button in SIM opens My licences here.
+- **SIM Shield feed** (`/api/signatures`). Admin › Security: add a bad file fingerprint (SHA-256) or a scam site,
+  and every SIM picks it up. No other company is involved.
+- **Website protection.** Addresses that keep failing (wrong passwords, fake keys, forged payment calls) are
+  blocked for a while. Admin › Security lists them, with Unblock / Block buttons.
+- **Saved SIM settings per licence** (`/api/licence-prefs`). The files folder and Google Drive link a buyer uses
+  are kept with their key, so reinstalling SIM with the same key reconnects them. Only those names and the link,
+  never files, passwords or Google tokens, and only a device signed in to the key can read them.
+
+New endpoints: `/api/licence-release`, `/api/licence-prefs`, `/api/signatures`. New tables: `licence_devices`,
+`security_signatures`, `blocked_domains`, `ip_hits`, `blocked_ips`; new columns `max_devices` and `prefs`.
+
+---
+
 ## New in this version (v3)
 
 - **Shared AI brain** - copies you export and the Android app use YOUR Groq key through this website

@@ -8,11 +8,12 @@ const NEEDED_ENV = ["SUPABASE_URL", "SUPABASE_ANON_KEY", "SUPABASE_SERVICE_ROLE_
 // ?check=1 (SIM's LICENSES checklist): is the latest schema.sql in, which settings are missing - names only, no values.
 async function deepCheck(sec) {
   const tryQ = async (fn) => { try { await fn(); return true; } catch { return false; } };
-  const [usage, phone] = await Promise.all([
+  const [usage, phone, devices] = await Promise.all([
     tryQ(() => db.select("ai_usage", {}, { limit: 1 })),
-    tryQ(() => db.select("licences", {}, { limit: 1, columns: "kid,activated_phone" })),
+    tryQ(() => db.select("licences", {}, { limit: 1, columns: "kid,activated_phone,max_devices,prefs" })),
+    tryQ(() => db.select("licence_devices", {}, { limit: 1 })),     // v3.2
   ]);
-  return { schema_latest: usage && phone, env_missing: NEEDED_ENV.filter((k) => !env(k)),
+  return { schema_latest: usage && phone && devices, env_missing: NEEDED_ENV.filter((k) => !env(k)),
            webhook_ready: !!sec.razorpay_webhook_secret };
 }
 

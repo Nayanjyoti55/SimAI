@@ -293,3 +293,70 @@ drop policy if exists "releases write" on storage.objects;
 create policy "releases write" on storage.objects for insert with check (bucket_id = 'releases' and is_admin());
 drop policy if exists "releases delete" on storage.objects;
 create policy "releases delete" on storage.objects for delete using (bucket_id = 'releases' and is_admin());
+
+-- ================================================================ v3.2: devices per licence, security
+-- How many devices (PCs + phones together) one key may be used on at the same time. Set per plan; copied onto
+-- each key when it's sold, and changeable per key in Admin › Licence keys.
+alter table plans add column if not exists max_devices int not null default 2;
+alter table licences add column if not exists max_devices int not null default 2;
+
+-- Every device a key is (or was) used on. "active" = holding one of the key's device slots right now.
+-- Signing out in SIM, uninstalling it, or "Remove" in My licences frees the slot.
+create table if not exists licence_devices (
+  kid text not null references licences(kid) on delete cascade,
+  device text not null,                      -- one-way device code (never the PC's serial or name)
+  platform text not null default 'windows',  -- windows | android
+  name text default '',                      -- e.g. "DESKTOP-4F2 (Windows)" - shown only to the key's owner
+  first_seen timestamptz not null default now(),
+  last_seen timestamptz not null default now(),
+  active boolean not null default true,
+  released_at timestamptz,
+  primary key (kid, device)
+);
+create index if not exists licence_devices_kid on licence_devices(kid);
+alter table licence_devices enable row level security;
+drop policy if exists "own devices" on licence_devices;
+create policy "own devices" on licence_devices for select
+  using (is_admin() or exists (select 1 from licences l where l.kid = licence_devices.kid and l.user_id = auth.uid()));
+drop policy if exists "admin devices" on licence_devices;
+create policy "admin devices" on licence_devices for all using (is_admin()) with check (is_admin());
+
+-- SIM Shield: threat fingerprints and blocked sites published to every copy of SIM (GET /api/signatures)
+create table if not exists security_signatures (
+  sha256 text primary key check (sha256 ~ '^[0-9a-f]{64}$'),
+  name text not null default '',
+  added_at timestamptz not null default now()
+);
+create table if not exists blocked_domains (
+  domain text primary key,
+  reason text default '',
+  added_at timestamptz not null default now()
+);
+-- Website protection: addresses that hammer sign-in / licence checks get blocked for a while
+create table if not exists ip_hits (
+  ip text not null,
+  bucket text not null,
+  minute bigint not null,
+  n int not null default 0,
+  primary key (ip, bucket, minute)
+);
+create table if not exists blocked_ips (
+  ip text primary key,
+  reason text default '',
+  blocked_at timestamptz not null default now(),
+  until timestamptz
+);
+alter table security_signatures enable row level security;
+alter table blocked_domains enable row level security;
+alter table ip_hits enable row level security;
+alter table blocked_ips enable row level security;
+drop policy if exists "admin signatures" on security_signatures;
+create policy "admin signatures" on security_signatures for all using (is_admin()) with check (is_admin());
+drop policy if exists "admin domains" on blocked_domains;
+create policy "admin domains" on blocked_domains for all using (is_admin()) with check (is_admin());
+drop policy if exists "admin blocked ips" on blocked_ips;
+create policy "admin blocked ips" on blocked_ips for all using (is_admin()) with check (is_admin());
+
+-- v3.2: SIM settings kept with the licence (files folder, Google Drive link) so a reinstall reconnects by itself.
+-- Never files, passwords or Google tokens.
+alter table licences add column if not exists prefs jsonb not null default '{}'::jsonb;

@@ -2,6 +2,7 @@
 // We check the signature, then still ask Razorpay's API ourselves before giving a key.
 // Razorpay dashboard › Account & Settings › Webhooks: URL https://<your-site>/api/razorpay/webhook,
 // events qr_code.credited + payment.captured, secret = the webhook secret in admin › Settings.
+import { failed } from "./_lib/guard.mjs";
 import { db } from "./_lib/db.mjs";
 import { handler, HttpError, json } from "./_lib/http.mjs";
 import { confirmFromGateway } from "./_lib/pay.mjs";
@@ -10,8 +11,10 @@ import { hmac, keys, sameHex } from "./_lib/razorpay.mjs";
 export default handler(async (req) => {
   const raw = await req.text();
   const k = await keys();
-  if (!k.webhook || !sameHex(hmac(k.webhook, raw), req.headers.get("x-razorpay-signature") || ""))
+  if (!k.webhook || !sameHex(hmac(k.webhook, raw), req.headers.get("x-razorpay-signature") || "")) {
+    await failed(req, "webhook");
     throw new HttpError(401, "bad signature");
+  }
   const ev = JSON.parse(raw || "{}");
   const qrId = ev?.payload?.qr_code?.entity?.id || ev?.payload?.payment?.entity?.notes?.qr_code_id || null;
   const orderId = ev?.payload?.qr_code?.entity?.notes?.order_id || ev?.payload?.payment?.entity?.notes?.order_id || null;

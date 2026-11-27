@@ -3,7 +3,7 @@ import { api, esc, exactRupees, rupees, size, state, until, when } from "../api.
 import { $, $$, busy, copy, render, title, toast } from "../ui.js";
 
 const TABS = [["overview", "Live overview"], ["orders", "Orders"], ["licences", "Licence keys"], ["payments", "Payments"],
-              ["users", "People"], ["plans", "Plans & prices"], ["releases", "Installers"], ["settings", "Settings"]];
+              ["users", "People"], ["plans", "Plans & prices"], ["releases", "Installers"], ["security", "Security"], ["settings", "Settings"]];
 let channel = null;
 let feed = [];
 
@@ -20,7 +20,7 @@ export async function admin(params) {
   const tab = params.tab || "overview";
   title(`Admin · ${TABS.find((t) => t[0] === tab)?.[1] || ""}`, state.cfg.product_name);
   startLive();
-  const fn = { overview, orders, licences, payments, users, plans, releases, settings }[tab] || overview;
+  const fn = { overview, orders, licences, payments, users, plans, releases, security, settings }[tab] || overview;
   await fn(params);
 }
 
@@ -128,6 +128,8 @@ function filterRows() {
 // ------------------------------------------------------------------ licences
 async function licences() {
   const { data } = await state.sb.from("licences").select("*, profiles(username,email)").order("created_at", { ascending: false }).limit(1000);
+  const { data: devRows } = await state.sb.from("licence_devices").select("*").eq("active", true).limit(10000);
+  const devsOf = (kid) => (devRows || []).filter((d) => d.kid === kid);
   const { data: planList } = await state.sb.from("plans").select("id,name");
   render(shell("licences", `<h1 class="admin-h">Licence keys</h1>
     <details class="panel" ${data?.length ? "" : "open"}><summary>Make a key by hand</summary>
@@ -150,18 +152,19 @@ async function licences() {
     </details>
     <div class="toolbar" style="margin-top:18px"><input id="search" placeholder="Search name, account, key id, note">
       <select id="flt"><option value="">All keys</option><option value="on">Switched on</option><option value="off">Switched off</option></select></div>
-    <div class="table-wrap"><table><thead><tr><th>For</th><th>Valid</th><th>Status</th><th>PC / phone</th><th>Last seen</th><th>From</th><th></th></tr></thead>
+    <div class="table-wrap"><table><thead><tr><th>For</th><th>Valid</th><th>Status</th><th>Devices</th><th>Last seen</th><th>From</th><th></th></tr></thead>
     <tbody id="rows">${(data || []).map((l) => `<tr data-s="${esc(((l.for_whom || "") + " " + (l.profiles?.username || "") + " " + (l.profiles?.email || "") + " " + l.kid + " " + (l.note || "")).toLowerCase())}" data-on="${l.enabled ? "on" : "off"}">
       <td>${esc(l.for_whom || l.profiles?.username || "—")}<br><small><code>${esc(l.kid)}</code> ${esc(l.note || "")}</small></td>
       <td>${l.not_after ? "until " + until(l.not_after) : esc(l.valid || "lifetime")}</td>
       <td>${l.enabled ? `<span class="tag ok">On</span>` : `<span class="tag danger">${l.renewed_to ? "Renewed" : "Off"}</span>`}</td>
-      <td>${l.activated_machine ? `<code title="PC">${esc(l.activated_machine.slice(0, 8))}</code>` : "<span class='muted'>no PC</span>"}<br>
-        ${l.activated_phone ? `<code title="Phone">📱 ${esc(l.activated_phone.slice(0, 8))}</code>` : "<span class='muted'>no phone</span>"}</td>
+      <td><b>${devsOf(l.kid).length} / ${Number(l.max_devices) || 2}</b><br>${devsOf(l.kid).map((d) =>
+        `<small>${d.platform === "android" ? "📱" : "💻"} ${esc(d.name || "")} <a href="#" data-free="${esc(l.kid)}|${esc(d.device)}" title="Free this device's place">✕</a></small>`).join("<br>")}</td>
       <td>${when(l.last_seen)}</td><td>${esc(l.source)}</td>
       <td class="row"><button class="btn btn-xs btn-ghost" data-cp="${l.kid}">Copy</button>
         <button class="btn btn-xs ${l.enabled ? "btn-danger" : ""}" data-tg="${l.kid}" data-to="${l.enabled ? 0 : 1}">${l.enabled ? "Switch off" : "Switch on"}</button>
         ${l.activated_machine ? `<button class="btn btn-xs btn-ghost" data-reset="${l.kid}">Free PC</button>` : ""}
         ${l.activated_phone ? `<button class="btn btn-xs btn-ghost" data-resetp="${l.kid}">Free phone</button>` : ""}
+        <button class="btn btn-xs btn-ghost" data-max="${l.kid}" data-cur="${Number(l.max_devices) || 2}">Devices…</button>
         <button class="btn btn-xs btn-ghost" data-ext="${l.kid}">Extend</button>
         <button class="btn btn-xs btn-danger" data-del="${l.kid}">Delete</button></td></tr>`).join("")}</tbody></table></div>`));
   void planList;
@@ -197,6 +200,25 @@ async function licences() {
     toast("This key can now be activated on another phone.");
     licences();
   })));
+  $$("[data-free]").forEach((a) => a.addEventListener("click", (e) => {
+    e.preventDefault();
+    const [kid, device] = a.dataset.free.split("|");
+    if (!confirm("Free this device's place? SIM on it switches to basic features.")) return;
+    busy(a, async () => {
+      await api("/api/admin/release-device", { method: "POST", body: { kid, device } });
+      toast("Device freed.");
+      licences();
+    });
+  }));
+  $$("[data-max]").forEach((b) => b.addEventListener("click", () => {
+    const n = prompt("How many devices (PCs + phones together) may use this key at the same time?", b.dataset.cur);
+    if (n === null) return;
+    busy(b, async () => {
+      await api("/api/admin/set-max-devices", { method: "POST", body: { kid: b.dataset.max, max_devices: Number(n) } });
+      toast("Saved.");
+      licences();
+    });
+  }));
   $$("[data-ext]").forEach((b) => b.addEventListener("click", () => {
     const days = prompt("Make a replacement key valid for how many days from now? (0 = lifetime)\nThe old key is switched off.", "30");
     if (days === null) return;
@@ -284,13 +306,14 @@ async function plans() {
     <td><input value="${esc(p.name || "")}" data-f="name"></td>
     <td><input type="number" min="0" value="${p.duration_days ?? 30}" data-f="duration_days" title="0 = lifetime"></td>
     <td><input type="number" min="1" step="0.01" value="${p.price_paise ? (p.price_paise / 100).toFixed(2) : ""}" data-f="price"></td>
+    <td><input type="number" min="1" max="50" value="${p.max_devices ?? 2}" data-f="max_devices" style="width:70px" title="PCs + phones at once"></td>
     <td><input value="${esc(p.badge || "")}" data-f="badge"></td>
     <td><input value="${esc(p.description || "")}" data-f="description"></td>
     <td><input type="number" value="${p.sort ?? 0}" data-f="sort" style="width:70px"></td>
     <td><input type="checkbox" data-f="active" ${p.active !== false ? "checked" : ""}></td></tr>`;
   render(shell("plans", `<h1 class="admin-h">Plans and prices</h1>
-    <p class="muted">Days = how long a key lasts (0 = lifetime). Price in rupees. Untick “On sale” to hide a plan.</p>
-    <div class="table-wrap"><table><thead><tr><th>Id</th><th>Name</th><th>Days</th><th>Price ₹</th><th>Badge</th><th>Description</th><th>Order</th><th>On sale</th></tr></thead>
+    <p class="muted">Days = how long a key lasts (0 = lifetime). Price in rupees. Devices = how many PCs and phones one key may be used on at the same time (a device that signs out or is removed frees its place). Untick “On sale” to hide a plan.</p>
+    <div class="table-wrap"><table><thead><tr><th>Id</th><th>Name</th><th>Days</th><th>Price ₹</th><th>Devices</th><th>Badge</th><th>Description</th><th>Order</th><th>On sale</th></tr></thead>
     <tbody id="rows">${(data || []).map((p) => row(p)).join("")}</tbody></table></div>
     <div class="row" style="margin-top:14px"><button class="btn btn-ghost" id="add">Add a plan</button><button class="btn" id="save">Save plans</button></div>
     <p class="err" id="err"></p>`));
@@ -300,6 +323,7 @@ async function plans() {
       const v = (f) => tr.querySelector(`[data-f=${f}]`);
       return { id: v("id").value.trim(), name: v("name").value.trim(), duration_days: Number(v("duration_days").value || 0),
                price_paise: Math.round(Number(v("price").value || 0) * 100), badge: v("badge").value.trim(),
+               max_devices: Math.max(1, Number(v("max_devices").value || 2)),
                description: v("description").value.trim(), sort: Number(v("sort").value || 0), active: v("active").checked };
     }).filter((r) => r.id && r.name);
     if (rows.some((r) => r.price_paise < 100)) throw new Error("Every price must be at least ₹1.");
@@ -308,6 +332,43 @@ async function plans() {
     toast("Plans saved.");
     plans();
   }, $("#err")));
+}
+
+// ------------------------------------------------------------------ security (v3.2)
+async function security() {
+  const d = await api("/api/admin/security", { method: "POST", body: {} });
+  render(shell("security", `<h1 class="admin-h">Security</h1>
+    <div class="panel"><h2>Blocked addresses</h2>
+      <p class="muted">Addresses that kept failing (password guessing, made-up licence keys, forged payment notices) are blocked automatically for a while.</p>
+      ${d.blocked_ips.length ? `<div class="table-wrap"><table><thead><tr><th>Address</th><th>Why</th><th>Since</th><th>Until</th><th></th></tr></thead><tbody>
+      ${d.blocked_ips.map((b) => `<tr><td><code>${esc(b.ip)}</code></td><td>${esc(b.reason || "")}</td><td>${when(b.blocked_at)}</td>
+        <td>${b.until ? when(b.until) : "for good"}</td><td><button class="btn btn-xs btn-ghost" data-unb="${esc(b.ip)}">Unblock</button></td></tr>`).join("")}
+      </tbody></table></div>` : `<p class="muted">Nothing blocked.</p>`}
+      <div class="row" style="margin-top:10px"><input id="bip" placeholder="Block an address, e.g. 203.0.113.9"><button class="btn btn-sm btn-danger" id="bipgo">Block</button></div>
+    </div>
+    <div class="panel"><h2>Threat fingerprints for SIM Shield</h2>
+      <p class="muted">Every copy of SIM downloads these and flags matching files. Add one from SIM's quarantine (“Share with all my copies”) or here.</p>
+      <div class="row"><input id="sha" placeholder="SHA-256 (64 letters)" style="flex:2"><input id="sname" placeholder="Name, e.g. Trojan.FakeInvoice" style="flex:1"><button class="btn btn-sm" id="shago">Add</button></div>
+      <div class="table-wrap"><table><tbody>${d.signatures.map((s) => `<tr><td><code>${esc(s.sha256.slice(0, 20))}…</code></td><td>${esc(s.name)}</td><td>${when(s.added_at)}</td>
+        <td><button class="btn btn-xs btn-ghost" data-rs="${esc(s.sha256)}">Remove</button></td></tr>`).join("")}</tbody></table></div>
+    </div>
+    <div class="panel"><h2>Blocked websites</h2>
+      <p class="muted">SIM warns about these sites and refuses to open them, on every copy.</p>
+      <div class="row"><input id="dom" placeholder="bad-site.xyz"><button class="btn btn-sm" id="domgo">Block site</button></div>
+      <div class="table-wrap"><table><tbody>${d.domains.map((x) => `<tr><td>${esc(x.domain)}</td><td>${when(x.added_at)}</td>
+        <td><button class="btn btn-xs btn-ghost" data-rd="${esc(x.domain)}">Remove</button></td></tr>`).join("")}</tbody></table></div>
+    </div><p class="err" id="err"></p>`));
+  const act = (action, body, msg) => busy(document.activeElement, async () => {
+    await api(`/api/admin/${action}`, { method: "POST", body });
+    toast(msg);
+    security();
+  }, $("#err"));
+  $$("[data-unb]").forEach((b) => b.addEventListener("click", () => act("unblock-ip", { ip: b.dataset.unb }, "Unblocked.")));
+  $$("[data-rs]").forEach((b) => b.addEventListener("click", () => act("remove-signature", { sha256: b.dataset.rs }, "Removed.")));
+  $$("[data-rd]").forEach((b) => b.addEventListener("click", () => act("remove-domain", { domain: b.dataset.rd }, "Removed.")));
+  $("#bipgo").addEventListener("click", () => act("block-ip", { ip: $("#bip").value.trim() }, "Blocked."));
+  $("#shago").addEventListener("click", () => act("add-signature", { sha256: $("#sha").value.trim(), name: $("#sname").value.trim() }, "Added - every copy picks it up at its next update."));
+  $("#domgo").addEventListener("click", () => act("add-domain", { domain: $("#dom").value.trim() }, "Blocked on every copy."));
 }
 
 // ------------------------------------------------------------------ releases (installers)
@@ -379,7 +440,7 @@ async function settings() {
     <div class="panel"><h2>Licence keys</h2>
       ${c("auto_issue", "Give the key the moment the payment is detected", "Off: keys are made switched-off; you switch them on in Licence keys.")}
       ${c("installer_check", "Installer and app accept only keys registered here and switched on", "Off: any genuine key you signed is accepted, even if it's not in the list.")}
-      ${c("one_pc_per_key", "One PC and one phone per key", "A key works on the first PC and the first phone that activate it. Use “Free PC” / “Free phone” to move it.")}</div>
+      ${c("one_pc_per_key", "Limit devices per key", "A key works on as many devices at once as its plan allows (Plans & prices › Devices). A device that signs out, is uninstalled, or is removed in My licences frees its place.")}</div>
     <div class="panel"><h2>Shared AI brain</h2>
       <p class="hint">Copies you export (and the Android app) can use your Groq key through this website, so buyers don't need their own.
         The key stays on the server; each licence has a daily limit. Groq's free plan limits apply to ALL users together —

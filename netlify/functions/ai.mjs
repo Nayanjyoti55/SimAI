@@ -4,6 +4,7 @@
 //   - a blocked, deleted or expired key stops getting answers at once
 //   - each key has a daily limit (Admin > Settings), so one person can't use up everybody's quota
 //   - message contents are passed through and never stored; only a per-key daily request count is kept
+import { failed, guard } from "./_lib/guard.mjs";
 import { checkLicence } from "./_lib/check.mjs";
 import { db, secrets, settings } from "./_lib/db.mjs";
 import { env, cors, handler, HttpError, json } from "./_lib/http.mjs";
@@ -40,8 +41,12 @@ async function who(req) {
   const key = auth.replace(/^Bearer\s+/i, "").trim();
   if (!key) throw new HttpError(401, "Send your licence key as the bearer token.");
   const platform = (req.headers.get("x-sim-platform") || "windows").toLowerCase() === "android" ? "android" : "windows";
+  await guard(req);
   const res = await checkLicence(key, { platform, device: req.headers.get("x-sim-device") || "", touch: false });
-  if (!res.ok) throw new HttpError(403, `licence ${res.reason}`);
+  if (!res.ok) {
+    if (res.reason === "invalid" || res.reason === "unknown") await failed(req, "ai");
+    throw new HttpError(403, `licence ${res.reason}`);
+  }
   return res;
 }
 

@@ -55,8 +55,21 @@ export async function fulfil(order, { utr = null, payer = null, paymentId = null
     for_whom: buyer?.username || buyer?.email || "", note: `${plan?.name || ""} · ${o.code}${note ? " · " + note : ""}`,
     valid: describe(info), not_before: notBefore, not_after: notAfter, duration: 0,
     enabled: s.auto_issue !== false, source: "web",
+    max_devices: Math.max(1, Number(plan?.max_devices) || 2),
   });
-  if (old) await db.update("licences", { kid: old.kid }, { enabled: false, renewed_to: info.kid });
+  if (old) {
+    await db.update("licences", { kid: old.kid }, { enabled: false, renewed_to: info.kid });
+    // ...and its saved SIM settings (files folder / Google Drive link)
+    if (old.prefs && Object.keys(old.prefs).length) {
+      try { await db.update("licences", { kid: info.kid }, { prefs: old.prefs }); } catch { /* older schema */ }
+    }
+    // the renewed key keeps the devices of the old one (they switch over by themselves)
+    try {
+      const devs = (await db.select("licence_devices", { kid: old.kid, active: true })) || [];
+      if (devs.length) await db.upsert("licence_devices", devs.slice(0, Math.max(1, Number(plan?.max_devices) || 2))
+        .map((d) => ({ kid: info.kid, device: d.device, platform: d.platform, name: d.name, active: true })), "kid,device");
+    } catch { /* older schema */ }
+  }
   const invoice = `INV-${now.toISOString().slice(0, 10).replace(/-/g, "")}-${o.code.split("-").pop()}`;
   await db.update("orders", { id: o.id }, { licence_kid: info.kid, invoice_no: invoice });
   await db.insert("payment_events", { source, raw: paymentId ? `Razorpay payment ${paymentId}` : note || source,
